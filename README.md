@@ -1,6 +1,7 @@
 # Проект по настройке github actions 
 
 
+
 ## CI/CD
 В репозитории настроен GitHub Actions (`.github/workflows/api-tests.yml`), который автоматически запускает API-тесты при `push` и `pull_request` в ветки `main`
 
