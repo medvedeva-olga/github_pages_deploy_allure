@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   tests:
+    name: api-tests
     runs-on: ubuntu-latest
 
     steps:
@@ -39,13 +40,17 @@ jobs:
         run: |
           pytest -v -m ci --alluredir=allure_results --clean-alluredir
 
+      # На PR GITHUB_REF_NAME вида "1/merge" — "/" нельзя использовать
+      # в именах артефактов, поэтому нормализуем имя.
       - name: Get branch name
         id: extract_branch
-        run: echo "branch=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        run: |
+          echo "branch=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          echo "safe_branch=${GITHUB_REF_NAME//\//-}" >> $GITHUB_OUTPUT
 
       # Скачиваем предыдущее состояние gh-pages (структура: main/)
       - name: Checkout previous reports (gh-pages)
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/checkout@v7
         with:
@@ -75,7 +80,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: allure-results-${{ steps.extract_branch.outputs.branch }}
+          name: allure-results-${{ steps.extract_branch.outputs.safe_branch }}
           path: allure_results/
           if-no-files-found: ignore
 
@@ -83,7 +88,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: allure-report-${{ steps.extract_branch.outputs.branch }}
+          name: allure-report-${{ steps.extract_branch.outputs.safe_branch }}
           path: allure-report/
           if-no-files-found: ignore
 
@@ -133,6 +138,7 @@ jobs:
   # Деплой на GitHub Pages — только main (develop блокируется защитой среды,
   # его отчет доступен как артефакт allure-report-develop)
   deploy:
+    name: deploy-pages
     needs: tests
     if: always() && github.event_name == 'push' && github.ref_name == 'main'
     runs-on: ubuntu-latest
