@@ -2,7 +2,7 @@ name: API Tests + Allure Report
 
 on:
   push:
-    branches: [ main]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
   workflow_dispatch:
@@ -12,6 +12,8 @@ permissions:
   pages: write
   id-token: write
 
+# Один общий поток деплоя: отчеты main и develop живут в одной gh-pages,
+# поэтому параллельные деплои могут затереть обновления друг друга.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -43,6 +45,29 @@ jobs:
         run: |
           pytest -v -m ci --alluredir=allure_results --clean-alluredir
 
+      - name: Get branch name
+        id: extract_branch
+        run: echo "branch=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      # Скачиваем предыдущее состояние gh-pages (структура: main/, develop/)
+      - name: Checkout previous reports (gh-pages)
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: gh-pages-dir
+
+      # main — история релизов: подтягиваем историю предыдущих прогонов main,
+      # чтобы в отчете появились тренды (Trend / History).
+      - name: Restore Allure history (main only)
+        if: always() && steps.extract_branch.outputs.branch == 'main' && github.event_name != 'pull_request'
+        run: |
+          if [ -d "gh-pages-dir/main/history" ]; then
+            mkdir -p allure_results/history
+            cp -r gh-pages-dir/main/history/* allure_results/history/
+          fi
+
       - name: Install Allure CLI
         if: always()
         run: npm install -g allure-commandline
@@ -55,7 +80,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: allure-results
+          name: allure-results-${{ steps.extract_branch.outputs.branch }}
           path: allure_results/
           if-no-files-found: ignore
 
@@ -63,9 +88,50 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: allure-report
+          name: allure-report-${{ steps.extract_branch.outputs.branch }}
           path: allure-report/
           if-no-files-found: ignore
+
+      # Собираем содержимое gh-pages:
+      #   /main/     — отчет с историей релизов (история сохраняется между прогонами)
+      #   /develop/  — оперативный отчет последнего коммита, старый удаляется целиком
+      - name: Prepare Pages content
+        if: always() && github.event_name == 'push'
+        run: |
+          set -e
+          BRANCH="${{ steps.extract_branch.outputs.branch }}"
+          mkdir -p pages-content
+
+          # Переносим все, что уже опубликовано (включая .nojekyll и индекс)
+          if [ -d gh-pages-dir ]; then
+            cp -r gh-pages-dir/. pages-content/
+          fi
+
+          # Полная перезапись каталога текущей ветки — мусор не копится
+          rm -rf "pages-content/${BRANCH}"
+          cp -r allure-report "pages-content/${BRANCH}"
+
+          # develop — оперативный отчет: историю трендов не храним
+          if [ "$BRANCH" != "main" ]; then
+            rm -rf "pages-content/${BRANCH}/history"
+          fi
+
+          # Корневая страница-переходник (создаем один раз, если еще нет)
+          if [ ! -f pages-content/index.html ]; then
+            cat > pages-content/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="ru">
+          <head><meta charset="utf-8"><title>API Test Reports</title></head>
+          <body>
+            <h1>API Test Reports</h1>
+            <ul>
+              <li><a href="main/">main — история релизов</a></li>
+              <li><a href="develop/">develop — оперативный отчет</a></li>
+            </ul>
+          </body>
+          </html>
+          EOF
+          fi
 
       - name: Setup Pages
         if: always() && github.event_name == 'push'
@@ -75,7 +141,7 @@ jobs:
         if: always() && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: allure-report
+          path: pages-content
 
       - name: Deploy to GitHub Pages
         if: always() && github.event_name == 'push'
