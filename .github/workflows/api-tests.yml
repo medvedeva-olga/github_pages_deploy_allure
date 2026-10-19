@@ -2,7 +2,7 @@ name: API Tests + Allure Report
 
 on:
   push:
-    branches: [ main]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
   workflow_dispatch:
@@ -18,11 +18,8 @@ concurrency:
 
 jobs:
   tests:
+    name: api-tests
     runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout repository
@@ -43,6 +40,26 @@ jobs:
         run: |
           pytest -v -m ci --alluredir=allure_results --clean-alluredir
 
+      # На PR GITHUB_REF_NAME вида "1/merge" — "/" нельзя использовать
+      # в именах артефактов, поэтому нормализуем имя.
+      - name: Get branch name
+        id: extract_branch
+        run: |
+          echo "branch=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          echo "safe_branch=${GITHUB_REF_NAME//\//-}" >> $GITHUB_OUTPUT
+
+      # main — история релизов: подтягиваем историю предыдущих прогонов main
+      # из кэша, чтобы в отчете появились тренды (Trend / History).
+      # Кэш у каждого бранча свой, сохраненный на main доступен только main.
+      - name: Restore Allure history (main only)
+        if: always() && steps.extract_branch.outputs.branch == 'main' && github.event_name == 'push'
+        uses: actions/cache/restore@v4
+        with:
+          path: allure_results/history
+          key: allure-history-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            allure-history-${{ github.ref_name }}-
+
       - name: Install Allure CLI
         if: always()
         run: npm install -g allure-commandline
@@ -51,11 +68,21 @@ jobs:
         if: always()
         run: allure generate allure_results -o allure-report --clean
 
+      # main — сохраняем историю для следующего прогона (после генерации
+      # отчет содержит актуальную history: предыдущие + текущий прогон)
+      - name: Save Allure history (main only)
+        if: always() && steps.extract_branch.outputs.branch == 'main' && github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: allure-report/history
+          key: allure-history-${{ github.ref_name }}-${{ github.run_id }}
+
+      # Отчет как обычный артефакт прогона — доступен для обеих веток
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: allure-results
+          name: allure-results-${{ steps.extract_branch.outputs.safe_branch }}
           path: allure_results/
           if-no-files-found: ignore
 
@@ -63,21 +90,59 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: allure-report
+          name: allure-report-${{ steps.extract_branch.outputs.safe_branch }}
           path: allure-report/
           if-no-files-found: ignore
 
+      # Собираем содержимое Pages только для main (push):
+      #   /main/ — отчет с историей релизов (история сохраняется между прогонами)
+      - name: Prepare Pages content
+        if: always() && github.event_name == 'push' && steps.extract_branch.outputs.branch == 'main'
+        run: |
+          set -e
+          mkdir -p pages-content/main
+
+          # Полная перезапись каталога main — старый отчет не копится
+          rm -rf pages-content/main
+          cp -r allure-report pages-content/main
+
+          # Корневая страница-переходник
+          cat > pages-content/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="ru">
+          <head><meta charset="utf-8"><title>API Test Reports</title></head>
+          <body>
+            <h1>API Test Reports</h1>
+            <ul>
+              <li><a href="main/">main — история релизов</a></li>
+            </ul>
+          </body>
+          </html>
+          EOF
+
       - name: Setup Pages
-        if: always() && github.event_name == 'push'
+        if: always() && github.event_name == 'push' && steps.extract_branch.outputs.branch == 'main'
         uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        if: always() && github.event_name == 'push'
+        if: always() && github.event_name == 'push' && steps.extract_branch.outputs.branch == 'main'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: allure-report
+          path: pages-content
 
+  # Деплой на GitHub Pages — только main (develop блокируется защитой среды,
+  # его отчет доступен как артефакт allure-report-develop)
+  deploy:
+    name: deploy-pages
+    needs: tests
+    if: always() && github.event_name == 'push' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
       - name: Deploy to GitHub Pages
-        if: always() && github.event_name == 'push'
         id: deployment
         uses: actions/deploy-pages@v5
