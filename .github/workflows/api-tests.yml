@@ -12,8 +12,6 @@ permissions:
   pages: write
   id-token: write
 
-# Один общий поток деплоя: отчеты main и develop живут в одной gh-pages,
-# поэтому параллельные деплои могут затереть обновления друг друга.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -21,10 +19,6 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout repository
@@ -49,7 +43,7 @@ jobs:
         id: extract_branch
         run: echo "branch=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
 
-      # Скачиваем предыдущее состояние gh-pages (структура: main/, develop/)
+      # Скачиваем предыдущее состояние gh-pages (структура: main/)
       - name: Checkout previous reports (gh-pages)
         if: always()
         continue-on-error: true
@@ -76,6 +70,7 @@ jobs:
         if: always()
         run: allure generate allure_results -o allure-report --clean
 
+      # Отчет как обычный артефакт прогона — доступен для обеих веток
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v7
@@ -92,14 +87,12 @@ jobs:
           path: allure-report/
           if-no-files-found: ignore
 
-      # Собираем содержимое gh-pages:
-      #   /main/     — отчет с историей релизов (история сохраняется между прогонами)
-      #   /develop/  — оперативный отчет последнего коммита, старый удаляется целиком
+      # Собираем содержимое gh-pages только для main (push):
+      #   /main/ — отчет с историей релизов (история сохраняется между прогонами)
       - name: Prepare Pages content
-        if: always() && github.event_name == 'push'
+        if: always() && github.event_name == 'push' && steps.extract_branch.outputs.branch == 'main'
         run: |
           set -e
-          BRANCH="${{ steps.extract_branch.outputs.branch }}"
           mkdir -p pages-content
 
           # Переносим все, что уже опубликовано (включая .nojekyll и индекс)
@@ -107,14 +100,9 @@ jobs:
             cp -r gh-pages-dir/. pages-content/
           fi
 
-          # Полная перезапись каталога текущей ветки — мусор не копится
-          rm -rf "pages-content/${BRANCH}"
-          cp -r allure-report "pages-content/${BRANCH}"
-
-          # develop — оперативный отчет: историю трендов не храним
-          if [ "$BRANCH" != "main" ]; then
-            rm -rf "pages-content/${BRANCH}/history"
-          fi
+          # Полная перезапись каталога main — старый отчет не копится
+          rm -rf pages-content/main
+          cp -r allure-report pages-content/main
 
           # Корневая страница-переходник (создаем один раз, если еще нет)
           if [ ! -f pages-content/index.html ]; then
@@ -126,7 +114,6 @@ jobs:
             <h1>API Test Reports</h1>
             <ul>
               <li><a href="main/">main — история релизов</a></li>
-              <li><a href="develop/">develop — оперативный отчет</a></li>
             </ul>
           </body>
           </html>
@@ -134,16 +121,27 @@ jobs:
           fi
 
       - name: Setup Pages
-        if: always() && github.event_name == 'push'
+        if: always() && github.event_name == 'push' && steps.extract_branch.outputs.branch == 'main'
         uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        if: always() && github.event_name == 'push'
+        if: always() && github.event_name == 'push' && steps.extract_branch.outputs.branch == 'main'
         uses: actions/upload-pages-artifact@v5
         with:
           path: pages-content
 
+  # Деплой на GitHub Pages — только main (develop блокируется защитой среды,
+  # его отчет доступен как артефакт allure-report-develop)
+  deploy:
+    needs: tests
+    if: always() && github.event_name == 'push' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
       - name: Deploy to GitHub Pages
-        if: always() && github.event_name == 'push'
         id: deployment
         uses: actions/deploy-pages@v5
