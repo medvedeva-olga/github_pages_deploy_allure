@@ -9,7 +9,6 @@
 
 **1. GitHub Pages (HTML-отчёт онлайн)**
 
-
 После каждого `push` workflow генерирует HTML-отчёт Allure и публикует его на GitHub Pages.
 Ссылка:
 
